@@ -1,13 +1,9 @@
-import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import Column, Integer, String, DateTime
 from datetime import datetime
 from config import DB_URL
-
-# Создаем директорию для данных если её нет
-os.makedirs("data", exist_ok=True)
 
 engine = create_async_engine(DB_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -41,7 +37,5 @@ class AssignedTask(Base):
     date = Column(DateTime, default=datetime.utcnow)
 
 async def init_db():
-    # Создаем директорию для данных если её нет
-    os.makedirs("data", exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
