@@ -6,8 +6,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from database import AsyncSessionLocal, User, Pair, AssignedTask, Task
 from sqlalchemy import select, func, and_
+from sqlalchemy.exc import IntegrityError
 from keyboards import task_buttons
 from utils import safe_send_message
+from tasks import send_task_to_pair  # Новая функция для отправки одного задания
 
 router = Router()
 
@@ -22,6 +24,9 @@ class Registration(StatesGroup):
 class AdminTask(StatesGroup):
     waiting_for_title = State()
     waiting_for_description = State()
+
+# Список админов (замените на реальные ID)
+ADMIN_IDS = [1919847749]  # Добавьте сюда свои ID
 
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext):
@@ -42,20 +47,44 @@ async def get_pair_code(message: Message, state: FSMContext, bot):
     code = message.text
 
     async with AsyncSessionLocal() as session:
-        pair_result = await session.execute(select(Pair).where(Pair.code == code))
-        pair = pair_result.scalar_one_or_none()
+        try:
+            # Проверяем, существует ли уже пользователь
+            existing_user_result = await session.execute(select(User).where(User.tg_id == message.from_user.id))
+            existing_user = existing_user_result.scalar_one_or_none()
+            
+            if existing_user:
+                await state.clear()
+                await message.answer("Вы уже зарегистрированы! Используйте бота для получения заданий.")
+                logger.info(f"Пользователь {message.from_user.id} уже зарегистрирован")
+                return
 
-        if not pair:
-            pair = Pair(code=code)
-            session.add(pair)
+            pair_result = await session.execute(select(Pair).where(Pair.code == code))
+            pair = pair_result.scalar_one_or_none()
+
+            if not pair:
+                pair = Pair(code=code)
+                session.add(pair)
+                await session.commit()
+                await session.refresh(pair)
+                logger.info(f"Создана новая пара с кодом {code}")
+
+            user = User(tg_id=message.from_user.id, name=name, pair_code=code, pair_id=pair.id)
+            session.add(user)
             await session.commit()
-            await session.refresh(pair)
-            logger.info(f"Создана новая пара с кодом {code}")
+            logger.info(f"Пользователь {message.from_user.id} зарегистрирован в паре {pair.id}")
 
-        user = User(tg_id=message.from_user.id, name=name, pair_code=code, pair_id=pair.id)
-        session.add(user)
-        await session.commit()
-        logger.info(f"Пользователь {message.from_user.id} зарегистрирован в паре {pair.id}")
+        except IntegrityError as e:
+            await session.rollback()
+            if "users_tg_id_key" in str(e):
+                await message.answer("Вы уже зарегистрированы в системе!")
+                logger.warning(f"Попытка повторной регистрации пользователя {message.from_user.id}")
+            else:
+                await message.answer("Произошла ошибка при регистрации. Попробуйте позже.")
+                logger.error(f"Ошибка при регистрации пользователя {message.from_user.id}: {e}")
+        except Exception as e:
+            await session.rollback()
+            await message.answer("Произошла ошибка при регистрации. Попробуйте позже.")
+            logger.error(f"Неожиданная ошибка при регистрации пользователя {message.from_user.id}: {e}")
 
     await state.clear()
     await message.answer("Вы успешно зарегистрированы!")
@@ -65,50 +94,91 @@ async def show_stats(message: Message):
     logger.info(f"Пользователь {message.from_user.id} запросил статистику")
     
     async with AsyncSessionLocal() as session:
-        # Проверяем, зарегистрирован ли пользователь
-        user_result = await session.execute(select(User).where(User.tg_id == message.from_user.id))
-        user = user_result.scalar_one_or_none()
-        
-        if not user or not user.pair_id:
-            await message.answer("Вы не зарегистрированы в паре.")
-            return
-        
-        # Статистика по заданиям
-        total_result = await session.execute(
-            select(func.count(AssignedTask.id)).where(AssignedTask.pair_id == user.pair_id)
-        )
-        total_tasks = total_result.scalar_one() or 0
-        
-        accepted_result = await session.execute(
-            select(func.count(AssignedTask.id)).where(
-                and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "accepted")
+        try:
+            # Проверяем, зарегистрирован ли пользователь
+            user_result = await session.execute(select(User).where(User.tg_id == message.from_user.id))
+            user = user_result.scalar_one_or_none()
+            
+            if not user or not user.pair_id:
+                await message.answer("Вы не зарегистрированы в паре.")
+                return
+            
+            # Статистика по заданиям
+            total_result = await session.execute(
+                select(func.count(AssignedTask.id)).where(AssignedTask.pair_id == user.pair_id)
             )
-        )
-        accepted_tasks = accepted_result.scalar_one() or 0
-        
-        rejected_result = await session.execute(
-            select(func.count(AssignedTask.id)).where(
-                and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "rejected")
+            total_tasks = total_result.scalar_one() or 0
+            
+            accepted_result = await session.execute(
+                select(func.count(AssignedTask.id)).where(
+                    and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "accepted")
+                )
             )
-        )
-        rejected_tasks = rejected_result.scalar_one() or 0
-        
-        pending_result = await session.execute(
-            select(func.count(AssignedTask.id)).where(
-                and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "pending")
+            accepted_tasks = accepted_result.scalar_one() or 0
+            
+            rejected_result = await session.execute(
+                select(func.count(AssignedTask.id)).where(
+                    and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "rejected")
+                )
             )
-        )
-        pending_tasks = pending_result.scalar_one() or 0
-        
-        stats_text = f"""📊 <b>Статистика вашей пары:</b>
+            rejected_tasks = rejected_result.scalar_one() or 0
+            
+            pending_result = await session.execute(
+                select(func.count(AssignedTask.id)).where(
+                    and_(AssignedTask.pair_id == user.pair_id, AssignedTask.status == "pending")
+                )
+            )
+            pending_tasks = pending_result.scalar_one() or 0
+            
+            stats_text = f"""📊 <b>Статистика вашей пары:</b>
 
 Всего заданий: {total_tasks}
 ✅ Принято: {accepted_tasks}
 ❌ Отклонено: {rejected_tasks}
 ⏳ В ожидании: {pending_tasks}
 """
-        
-        await message.answer(stats_text, parse_mode="HTML")
+            
+            await message.answer(stats_text, parse_mode="HTML")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики для пользователя {message.from_user.id}: {e}")
+            await message.answer("Произошла ошибка при получении статистики. Попробуйте позже.")
+
+# НОВАЯ КОМАНДА: Отправка заданий прямо сейчас
+@router.message(Command("sendnow"), F.from_user.id.in_(ADMIN_IDS))
+async def send_tasks_now(message: Message, bot):
+    logger.info(f"Админ {message.from_user.id} инициировал немедленную отправку заданий")
+    
+    try:
+        sent_count = 0
+        async with AsyncSessionLocal() as session:
+            # Получаем все пары
+            result = await session.execute(select(User.pair_id).distinct())
+            pair_ids = [row[0] for row in result.fetchall() if row[0] is not None]
+
+            if not pair_ids:
+                await message.answer("❌ Нет зарегистрированных пар для отправки заданий.")
+                return
+
+            # Отправляем задания всем парам
+            for pair_id in pair_ids:
+                try:
+                    success = await send_task_to_pair(bot, pair_id, session)
+                    if success:
+                        sent_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке задания паре {pair_id}: {e}")
+            
+            await message.answer(f"✅ Задания отправлены {sent_count} парам!")
+            logger.info(f"Админ {message.from_user.id} отправил задания {sent_count} парам")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при немедленной отправке заданий админом {message.from_user.id}: {e}")
+        await message.answer("❌ Произошла ошибка при отправке заданий.")
+
+@router.message(Command("sendnow"), F.from_user.id.not_in_(ADMIN_IDS))
+async def not_admin_send(message: Message):
+    await message.answer("❌ У вас нет прав для выполнения этой команды.")
 
 # Обработка кнопок
 @router.callback_query(F.data.startswith("accept_"))
@@ -254,9 +324,7 @@ async def get_partner_tg_id(user_tg_id: int, session):
         return partner
     return None
 
-# АДМИН ФУНКЦИОНАЛ
-ADMIN_IDS = [123456789]  # Замените на реальные ID админов
-
+# АДМИН ФУНКЦИОНАЛ для добавления заданий
 @router.message(Command("addtask"), F.from_user.id.in_(ADMIN_IDS))
 async def add_task_start(message: Message, state: FSMContext):
     logger.info(f"Админ {message.from_user.id} начал добавление задания")
