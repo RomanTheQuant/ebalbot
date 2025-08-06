@@ -1,17 +1,21 @@
 import asyncio
 import logging
+import os
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from database import init_db
 from handlers import router
 from scheduler import setup_scheduler
 
+# Создаем директорию для логов если её нет
+os.makedirs("logs", exist_ok=True)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("bot.log"),
+        logging.FileHandler("logs/bot.log"),  # Путь к файлу внутри директории
         logging.StreamHandler()
     ]
 )

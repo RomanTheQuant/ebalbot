@@ -9,10 +9,10 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - TASK_TIME=${TASK_TIME}
     volumes:
-      - ./bot.log:/app/bot.log
-      - ./bot.db:/app/bot.db
-      - ./backups:/app/backups
+      - ./logs:/app/logs
+      - ./data:/app/data  # Для SQLite файла
     restart: unless-stopped
 
 volumes:
-  backups:
+  logs:
+  data:
