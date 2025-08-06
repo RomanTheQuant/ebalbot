@@ -10,9 +10,7 @@ services:
       - TASK_TIME=${TASK_TIME}
     volumes:
       - ./logs:/app/logs
-      - ./data:/app/data  # Для SQLite файла
+      - ./data:/app/data  # Монтируем локальную директорию в контейнер
     restart: unless-stopped
 
-volumes:
-  logs:
-  data:
+# Убираем именованные volumes, используем только bind mounts
